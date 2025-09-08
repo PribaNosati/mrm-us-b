@@ -7,8 +7,8 @@
 @param hardwareSerial - Serial, Serial1, Serial2,... - an optional serial port, for example for Bluetooth communication
 @param maxNumberOfBoards - maximum number of boards
 */
-Mrm_us_b::Mrm_us_b(Robot* robot, uint8_t maxNumberOfBoards) : 
-	SensorBoard(robot, 1, "US-B", maxNumberOfBoards, ID_MRM_US_B, 1) {
+Mrm_us_b::Mrm_us_b(uint8_t maxNumberOfBoards) : 
+	SensorBoard(1, "US-B", maxNumberOfBoards, ID_MRM_US_B, 1) {
 	readings = new std::vector<uint16_t>(maxNumberOfBoards);
 }
 
@@ -56,7 +56,7 @@ void Mrm_us_b::add(char * deviceName)
 		canOut = CAN_ID_US_B7_OUT;
 		break;
 	default:
-		sprintf(errorMessage, "Too many %s: %i.", _boardsName, nextFree);
+		sprintf(errorMessage, "Too many %s: %i.", _boardsName.c_str(), nextFree);
 		return;
 	}
 
@@ -67,29 +67,25 @@ void Mrm_us_b::add(char * deviceName)
 @param data - 8 bytes from CAN Bus message.
 @param length - number of data bytes
 */
-bool Mrm_us_b::messageDecode(uint32_t canId, uint8_t data[8], uint8_t length) {
-	for (uint8_t deviceNumber = 0; deviceNumber < nextFree; deviceNumber++) {
-		if (isForMe(canId, deviceNumber)) {
-			if (!messageDecodeCommon(canId, data, deviceNumber)) {
-				switch (data[0]) {
+bool Mrm_us_b::messageDecode(CANMessage& message) {
+	for (Device& device : devices)
+		if (isForMe(message.id, device)) {
+			if (!messageDecodeCommon(message, device)) {
+				switch (message.data[0]) {
 					case COMMAND_SENSORS_MEASURE_SENDING:
 					{
-						uint16_t mm = (data[2] << 8) | data[1];
-						(*readings)[deviceNumber] = mm;
-						(*_lastReadingMs)[deviceNumber] = millis();
+						uint16_t mm = (message.data[2] << 8) | message.data[1];
+						(*readings)[device.number] = mm;
+						device.lastReadingsMs = millis();
 					}
 					break;
 				// }
 				default:
-					print("Unknown command. ");
-					messagePrint(canId, length, data, false);
-					errorCode = 204;
-					errorInDeviceNumber = deviceNumber;
+					errorAdd(message, ERROR_COMMAND_UNKNOWN, false, true);
 				}
 			}
 			return true;
 		}
-	}
 	return false;
 }
 
@@ -99,10 +95,10 @@ bool Mrm_us_b::messageDecode(uint32_t canId, uint8_t data[8], uint8_t length) {
 */
 uint16_t Mrm_us_b::reading(uint8_t deviceNumber) {
 	if (deviceNumber >= nextFree) {
-		sprintf(errorMessage, "%s %i doesn't exist.", _boardsName, deviceNumber);
+		sprintf(errorMessage, "%s %i doesn't exist.", _boardsName.c_str(), deviceNumber);
 		return 0;
 	}
-	alive(deviceNumber, true);
+	aliveWithOptionalScan(&devices[deviceNumber], true);
 	if (started(deviceNumber))
 		return (*readings)[deviceNumber];
 	else
@@ -113,8 +109,8 @@ uint16_t Mrm_us_b::reading(uint8_t deviceNumber) {
 */
 void Mrm_us_b::readingsPrint() {
 	print("US:");
-	for (uint8_t deviceNumber = 0; deviceNumber < nextFree; deviceNumber++) 
-			print(" %3i", (*readings)[deviceNumber]);
+	for (Device& device: devices)
+		print(" %3i", (*readings)[device.number]);
 }
 
 /** If sensor not started, start it and wait for 1. message
@@ -122,18 +118,18 @@ void Mrm_us_b::readingsPrint() {
 @return - started or not
 */
 bool Mrm_us_b::started(uint8_t deviceNumber) {
-	if (millis() - (*_lastReadingMs)[deviceNumber] > MRM_US_B_INACTIVITY_ALLOWED_MS || (*_lastReadingMs)[deviceNumber] == 0) {
+	if (millis() - devices[deviceNumber].lastReadingsMs > MRM_US_B_INACTIVITY_ALLOWED_MS || devices[deviceNumber].lastReadingsMs == 0) {
 		//print("Start mrm-us-b%i \n\r", deviceNumber); 
 		for (uint8_t i = 0; i < 8; i++) { // 8 tries
-			start(deviceNumber, 0);
+			start(&devices[deviceNumber], 0);
 			// Wait for 1. message.
 			uint32_t startMs = millis();
 			while (millis() - startMs < 50) {
-				if (millis() - (*_lastReadingMs)[deviceNumber] < 100) {
+				if (millis() - devices[deviceNumber].lastReadingsMs < 100) {
 					//print("US confirmed\n\r");
 					return true;
 				}
-				robotContainer->delayMs(1);
+				delayMs(1);
 			}
 		}
 		strcpy(errorMessage, "mrm-us-b dead.\n\r");
@@ -147,15 +143,15 @@ bool Mrm_us_b::started(uint8_t deviceNumber) {
 */
 void Mrm_us_b::test()
 {
-	static uint32_t lastMs = 0;
+	static uint64_t lastMs = 0;
 
 	if (millis() - lastMs > 300) {
 		uint8_t pass = 0;
-		for (uint8_t deviceNumber = 0; deviceNumber < nextFree; deviceNumber++) {
-			if (alive(deviceNumber)) {
+		for (Device& device: devices){
+			if (device.alive) {
 				if (pass++)
 					print("| ");
-				print("%i ", reading(deviceNumber));
+				print("%i ", reading(device.number));
 			}
 		}
 		lastMs = millis();
